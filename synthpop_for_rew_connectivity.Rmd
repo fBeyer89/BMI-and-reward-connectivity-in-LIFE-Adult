@@ -1,0 +1,75 @@
+---
+title: "synthpop_for_rew_connectivity"
+author: "F. Beyer"
+date: "7/20/2020"
+output: html_document
+---
+
+## Synthesizing data for the project on BMI and reward connectivity
+In this notebook, I synthesize the data needed to replicate the data structure, and main findings from the publication "Higher BMI, but not obesity-related genetic polymorphisms, correlates with lower structural connectivity of the reward network in a population-based study" by Beyer et al.
+
+The preprint of the paper can be found on [biorxiv]().
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(synthpop)
+```
+
+### Loading the real data
+First, we load the real data and select the variables relevant for the main analyses of the manuscript. These are age, sex, BMI, FTO and Taq1A-risk (3, 2 levels, respectively), relative number of streamlines (NOS) and fractional anisotropy (FA) connectivity strength (CS) and clustering coefficient (CC).
+
+```{r loading the real data}
+final_sample=read.csv("/data/p_life_results/2017_beyer_reward_connectivity/DTI/Paper_2019/scripts/final_sample.csv")
+final_sample$FTO_risk=as.factor(final_sample$FTO_risk)
+final_sample$Taq1A_risk=as.factor(final_sample$Taq1A_risk)
+
+data_for_synth=final_sample[,c("Age_all","sex","BMI_BMI","FTO_risk","Taq1A_risk","rel_FA_strength", "rel_FA_CC","rel_NOS_strength","rel_NOS_CC")]
+```
+
+### Synthesizing the data 
+To synthesize data which closely resembles the original dataset, we use the `synthpop` package with its default parameters. 
+The package is described [here](https://cran.r-project.org/web/packages/synthpop/index.html). Short introductions can be found [here](https://www.dsquintana.blog/creating-and-synthetic-version-of-a-real-dataset/) and [here](https://www.r-bloggers.com/generating-synthetic-data-sets-with-synthpop-in-r/).
+The key objective of this is to replace sensitive original values with synthetic ones while causing minimal distortion of the statistical information. This allows sharing of the artificial data, even if sharing of original data is not possible due to privacy concerns. This is achieved by a one-by-one sequential modelling, where each column of the synthetic data is generated from the conditional distribution of this variable given the observed values and the previously fitted columns.
+
+```{r create synthetic data}
+my.seed<-185639
+syndata=syn(data = data_for_synth, seed = my.seed)
+```
+Now we compare the distribution of the real and synthesized data.
+```{r compare synthetic and real data, echo=FALSE}
+compare(syndata,data_for_synth, nrow=4, ncol = 3)$plot
+```
+The distributions look very similar. 
+
+### Analysis of BMI and reward network connectivity  
+Now, we compare the output of the main analysis in the paper (`reward connectivity ~ age + sex + BMI`).
+```{r BMI and reward network connectivity}
+R1 <- lm.synds(rel_NOS_CC ~ Age_all + factor(sex)  + BMI_BMI, data=syndata)
+compare(R1, data_for_synth)
+R2 <- lm.synds(rel_NOS_strength ~ Age_all + factor(sex)  + BMI_BMI, data=syndata)
+compare(R2, data_for_synth)
+R3 <- lm.synds(rel_FA_CC ~ Age_all + factor(sex)  + BMI_BMI, data=syndata)
+compare(R3, data_for_synth)
+R4 <- lm.synds(rel_FA_strength ~ Age_all + factor(sex)  + BMI_BMI, data=syndata)
+compare(R4, data_for_synth)
+```
+The results obtained with the synthetic data and real data are very similar, i.e. there is a significant negative association of BMI with relativ NOS and FA strength, but not CC. 
+
+### Analysis of genetic variants, BMI and reward network connectivity
+```{r compare result for genetic analyses}
+R0 <- lm.synds(BMI_BMI ~ Age_all + factor(sex)  + FTO_risk + Taq1A_risk, data=syndata)
+compare(R0, data_for_synth)
+
+R1 <- lm.synds(rel_NOS_strength ~ Age_all + factor(sex)  + FTO_risk + Taq1A_risk, data=syndata)
+compare(R1, data_for_synth)
+
+R2 <- lm.synds(rel_FA_strength ~ Age_all + factor(sex)  + FTO_risk + Taq1A_risk, data=syndata)
+compare(R2, data_for_synth)
+```
+The same is true for the genetic analyses, i.e. FTO is related to higher BMI, but there is no statistically significant association of FTO and Taq1A with reward network connectivity strength.
+
+### Saving the synthetic data for further use
+```{r save the synthetic data}
+write.csv(syndata$syn,"/data/p_life_results/2017_beyer_reward_connectivity/DTI/Paper_2019/BMI_rew_connectivity/synth_data.csv")
+```
+
