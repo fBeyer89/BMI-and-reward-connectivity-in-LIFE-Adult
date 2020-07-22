@@ -1,0 +1,893 @@
+```{r loading libraries and functions, include = FALSE}
+library(ggplot2)
+library(psych); library(pastecs)
+library(boot); 
+library(QuantPsyc)
+library(psych); library(pastecs)
+library(lme4)
+library(nlme)
+library(effects)
+library(nortest)
+library(mediation)
+library(car)
+library(dplyr)
+library(haven)
+library(HardyWeinberg)
+library(performance)
+
+###diagnostic tool for linear models from roger mundry
+source('.plot_diagnostics.R')
+source('.diagnostics_dfbeta_cooks.R')
+```
+```{r load input data, echo=FALSE}
+#input data.
+data <- read_sav("/some/directoryPoster_2017/tables/2048_subjects_processed_during_10kin1day_stored_in_data_pt_life.sav")
+data=data[,c("PseudoID","SIC")]
+
+reward_vals<-read.table("/some/directoryPaper_2019/raw_data/rewardmetrics_2044.dat",
+                        header=T)
+glob_vals<-read.table("/some/directoryPaper_2019/raw_data/results_global.dat", header=T)
+
+node_vals<-read.table("/some/directoryPaper_2019/raw_data/node_specific_results_strength.dat", header=T)
+
+all_infos<-read.csv("/some/directory/Preprocessed/derivatives/PV168_A1_Pilot_subject_list_inclusion_exclusion29.1.19.csv")
+
+genetics_taq1<-read.csv("/some/directory/Raw/Genetics_raw/2017_6_SNPs/SNP_6_coded_risk_n1882.csv")
+genetics_fto<-read_sav("/some/directory/Raw/Genetics_raw/2015_33_SNPs/SNP_coded_risk_n5770_corrected_syntax_2019.sav")
+
+#merge files
+reward_vals_merged<-merge(reward_vals,data, by.x="PseudoID")
+all_conn_vals<-merge(reward_vals_merged, glob_vals, by.x="PseudoID")
+all_conn_vals<-merge(all_conn_vals,node_vals, by.x="PseudoID")
+length(all_conn_vals$PseudoID)
+#merge demographic
+all_conn_vals<-merge(all_conn_vals, all_infos, by.x="SIC")
+```
+
+```{r select only participants aged below 60 years, echo=FALSE}
+nrow(all_conn_vals[all_conn_vals$Age_all>=60,])
+all_conn_vals_age=all_conn_vals[all_conn_vals$Age_all<60,]
+nrow(all_conn_vals_age)
+```
+
+```{r add genetic data, echo=FALSE}
+#add genetic data: N=399 have genetic data
+select_genetics=merge(all_conn_vals_age, genetics_taq1, by.x="SIC")
+select_genetics=merge(select_genetics, genetics_fto, by.x="SIC", by.y="SIC")
+nrow(select_genetics)
+
+#recode 
+select_genetics$Taq1A_risk=1
+select_genetics[select_genetics$rs1800497_risk==0,"Taq1A_risk"]=0
+select_genetics$FTO_risk=as.factor(select_genetics$FTO_risk)
+select_genetics$Taq1A_risk=as.factor(select_genetics$Taq1A_risk)
+```
+
+```{r add BMI data missing in two participants, echo=FALSE}
+#BMI
+anthro=readxl::read_xlsx("/some/directory/Raw/Questionnaires_raw/2018_01_PV168_Update/data/PV0168_D00074_NODUP.xlsx")
+select_genetics_bmi=merge(select_genetics,anthro,by.x="SIC",by.y="BMI_S010061_SIC",all.x=T)
+
+#exclude participants without bmi information (N=2)
+select_genetics_bmi=select_genetics_bmi[!is.na(select_genetics_bmi$BMI_BMI),]
+nrow(select_genetics_bmi)
+```
+
+```{r apply inclusion/exclusion previously n:17 were excluded, echo=FALSE}
+###
+#stroke: 1
+table(select_genetics_bmi[,c("stroke_y_n")])
+#lesions + befund: 7 + 4
+table(select_genetics_bmi[,c("mri_lesion_num")])
+table(select_genetics_bmi[,c("MRT_BefundBewertung_Bef")])
+#cancer treatment: 6
+table(select_genetics_bmi[,c("cancer_treatment_y_n")])
+#epilepsy:5
+table(select_genetics_bmi[,c("epilepsy_y_n")])
+#parkinson: none
+table(select_genetics_bmi[,c("parkinson_y_n")])
+#ms:2
+table(select_genetics_bmi[,c("ms_y_n")])
+#central medication: strong: 27, indirect: 5
+table(select_genetics_bmi[,c("Medi_central")])
+
+#inclusion exclusion -> 46 exclusion
+include=(select_genetics_bmi$stroke_y_n!=1&
+          (select_genetics_bmi$mri_lesion_num=="missing"|
+          select_genetics_bmi$mri_lesion_num=="keine"|
+          select_genetics_bmi$mri_lesion_num=="kongenital")&
+         select_genetics_bmi$MRT_BefundBewertung_Bef!='verwendungsfähig nein'&
+         select_genetics_bmi$cancer_treatment_y_n!=1&
+         select_genetics_bmi$mri_tumors_num!="behandlungsbedürftig"&
+         select_genetics_bmi$epilepsy_y_n!=1&
+         select_genetics_bmi$ms_y_n!=1&
+         select_genetics_bmi$parkinson_y_n!=1&
+         select_genetics_bmi$Medi_central!="strong/direct"&
+         select_genetics_bmi$Medi_central!="weak/indirect")
+table(include)
+
+#Exclude home many for what
+table(select_genetics_bmi$stroke_y_n!=1) #1 stroke
+table(select_genetics_bmi$stroke_y_n!=1& # 7 mri lesions
+         (select_genetics_bmi$mri_lesion_num=="missing"|
+          select_genetics_bmi$mri_lesion_num=="keine"|
+          select_genetics_bmi$mri_lesion_num=="kongenital"))
+table(select_genetics_bmi$stroke_y_n!=1& #4 befund
+         (select_genetics_bmi$mri_lesion_num=="missing"|
+          select_genetics_bmi$mri_lesion_num=="keine"|
+          select_genetics_bmi$mri_lesion_num=="kongenital")&
+          select_genetics_bmi$MRT_BefundBewertung_Bef!='verwendungsfähig nein')
+table(select_genetics_bmi$stroke_y_n!=1& #5 cancer treatment
+         (select_genetics_bmi$mri_lesion_num=="missing"|
+          select_genetics_bmi$mri_lesion_num=="keine"|
+          select_genetics_bmi$mri_lesion_num=="kongenital")&
+         select_genetics_bmi$MRT_BefundBewertung_Bef!='verwendungsfähig nein'&
+         select_genetics_bmi$cancer_treatment_y_n!=1)
+table(select_genetics_bmi$stroke_y_n!=1& #5 epilepsy
+         (select_genetics_bmi$mri_lesion_num=="missing"|
+          select_genetics_bmi$mri_lesion_num=="keine"|
+          select_genetics_bmi$mri_lesion_num=="kongenital")&
+         select_genetics_bmi$MRT_BefundBewertung_Bef!='verwendungsfähig nein'&
+         select_genetics_bmi$cancer_treatment_y_n!=1&
+        select_genetics_bmi$epilepsy_y_n!=1)
+table(select_genetics_bmi$stroke_y_n!=1& #1 ms
+         (select_genetics_bmi$mri_lesion_num=="missing"|
+          select_genetics_bmi$mri_lesion_num=="keine"|
+          select_genetics_bmi$mri_lesion_num=="kongenital")&
+         select_genetics_bmi$MRT_BefundBewertung_Bef!='verwendungsfähig nein'&
+         select_genetics_bmi$cancer_treatment_y_n!=1&
+        select_genetics_bmi$epilepsy_y_n!=1&
+        select_genetics_bmi$ms_y_n!=1)
+table(select_genetics_bmi$stroke_y_n!=1& #25 cm
+         (select_genetics_bmi$mri_lesion_num=="missing"|
+          select_genetics_bmi$mri_lesion_num=="keine"|
+          select_genetics_bmi$mri_lesion_num=="kongenital")&
+         select_genetics_bmi$MRT_BefundBewertung_Bef!='verwendungsfähig nein'&
+         select_genetics_bmi$cancer_treatment_y_n!=1&
+        select_genetics_bmi$epilepsy_y_n!=1&
+        select_genetics_bmi$ms_y_n!=1&
+         select_genetics_bmi$Medi_central!="strong/direct"&
+         select_genetics_bmi$Medi_central!="weak/indirect")
+
+
+#N=349 von N=397 (48 excluded due to all of the above, out of which 25 due to centrally active medication)
+tmp_sample=select_genetics_bmi[include,]
+
+```
+
+
+
+### Confounding variables:
+```{r add confounders, echo=FALSE}
+#add mean FD from DWI scan.
+headmotion=read.csv("/some/directory/Preprocessed/derivatives/head_motion/LIFE3T_DWI.csv")
+tmp_sample=merge(tmp_sample,headmotion,by.x="SIC",by.y="subject_id",all.x=T)
+
+#smoking status:
+sm=readxl::read_xlsx("/some/directory/Raw/Questionnaires_raw/2018_01_PV168_Update/data/PV0168_D00141_NODUP.xlsx")
+tmp_sample=merge(tmp_sample,sm,by.x="SIC",by.y="TOB2_R00001_SIC",all.x=T)
+
+#CESD
+cesd=readxl::read_xlsx("/some/directory/Raw/Questionnaires_raw/2018_01_PV168_Update/data/PV0168_D00041_NODUP.xlsx")
+tmp_sample=merge(tmp_sample,cesd,by.x="SIC",by.y="CES_D_SCORE_SIC",all.x=T)
+
+#soziodemo
+socio=readxl::read_xlsx("/some/directory/Raw/Questionnaires_raw/2018_01_PV168_Update/data/PV0168_T00001_NODUP.xlsx")
+tmp_sample=merge(tmp_sample,socio,by.x="SIC",by.y="SOZIO_SIC",all.x=T)
+
+#recode education information:
+tmp_sample[!is.na(tmp_sample$SOZIO_F0041)&
+                            tmp_sample$SOZIO_F0041==95,"SOZIO_F0041"]=6
+
+tmp_sample$educ_4levels=0
+min(tmp_sample$SOZIO_F0041, na.rm=TRUE)
+#tmp_sample[!is.na(tmp_sample$SOZIO_F0041)&
+#                            tmp_sample$SOZIO_F0041==1|
+#                            !is.na(tmp_sample$SOZIO_F0041)&
+#                            tmp_sample$SOZIO_F0041==2,]$educ_4levels=1
+tmp_sample[!is.na(tmp_sample$SOZIO_F0041)&
+                            tmp_sample$SOZIO_F0041==3|
+                            tmp_sample$SOZIO_F0041==5&
+                            tmp_sample$Age_all>=61,"educ_4levels"]=2
+tmp_sample[!is.na(tmp_sample$SOZIO_F0041)&
+                            tmp_sample$SOZIO_F0041==4|
+                            !is.na(tmp_sample$SOZIO_F0041)&
+                            tmp_sample$SOZIO_F0041==5&
+                            tmp_sample$Age_all<61,"educ_4levels"]=3
+tmp_sample[!is.na(tmp_sample$SOZIO_F0041)&
+                            tmp_sample$SOZIO_F0041==6|
+                            !is.na(tmp_sample$SOZIO_F0041)&
+                            tmp_sample$SOZIO_F0041==7,"educ_4levels"]=4
+tmp_sample[tmp_sample$educ_4levels==0,"educ_4levels"]=NA
+```
+```{r select only relevant variables, echo=FALSE}
+#select only relevant variables (to reduce the messiness)
+colnames(tmp_sample)[c(1:40,43,44,73,75,77,80,86,117,118,138,141,237,448,453,490,493,497,498,500,505,511,514,608)]
+
+
+final_sample=tmp_sample[,c(1:40,43,44,73,75,77,80,86,117,118,138,141,237,448,453,490,493,497,498,500,505,511,514,608)]
+colnames(final_sample)
+
+final_sample$BMI_z=scale(final_sample$BMI_BMI)
+final_sample$age_z=scale(final_sample$Age_all)
+final_sample$log_CESD=log(final_sample$CES_D_SCORE_SUM_CES_D+1)
+final_sample$log_meanFD=log(final_sample$meanFD)
+#levels(final_sample$Medi_central)=c("None","None","Strong","Weak")
+```
+
+```{r define outliers, echo=FALSE}
+#according to 10-k-in-1-day workshop: mean FA/mean NOS < or > 
+#Outliers were defined as values higher than (3rd quartile + 2*interquartile range (IQR))
+#or lower than (1st quartile - 2*interquartile range (IQR)).
+#exclude two participants
+
+threshold_NOS=c(quantile(final_sample$mean_NOS)[2]-2*IQR(final_sample$mean_NOS),
+             quantile(final_sample$mean_NOS)[4]+2*IQR(final_sample$mean_NOS))
+threshold_FA=c(quantile(final_sample$mean_FA)[2]-2*IQR(final_sample$mean_FA),
+                quantile(final_sample$mean_FA)[4]+2*IQR(final_sample$mean_FA))
+
+final_sample[final_sample$mean_NOS<threshold_NOS[1],"SIC"]
+final_sample[final_sample$mean_NOS>threshold_NOS[2],"SIC"]
+final_sample[final_sample$mean_FA<threshold_FA[1],"SIC"]
+final_sample[final_sample$mean_FA>threshold_FA[2],"SIC"]
+
+final_sample=final_sample[final_sample$mean_FA<threshold_FA[2]&
+                                                    final_sample$mean_FA>threshold_FA[1]&
+                                                    final_sample$mean_NOS<threshold_NOS[2]&
+                                                    final_sample$mean_NOS>threshold_NOS[1],]
+nrow(final_sample)
+
+#normalize values
+final_sample$rel_FA_CC=final_sample$REW_FA_CC/final_sample$GLOB_FA_CC
+final_sample$rel_FA_strength=final_sample$REW_FA_strength/final_sample$GLOB_FA_strength
+final_sample$rel_NOS_CC=final_sample$REW_NOS_CC/final_sample$GLOB_NOS_CC
+final_sample$rel_NOS_strength=final_sample$REW_NOS_strength/final_sample$GLOB_NOS_strength
+
+#nodewise:
+final_sample$rel_strength_NOS_l_latOFC=final_sample$strength_NOS_l_latOFC/final_sample$GLOB_NOS_strength      
+final_sample$rel_strength_NOS_r_latOFC=final_sample$strength_NOS_r_latOFC/final_sample$GLOB_NOS_strength       
+final_sample$rel_strength_NOS_l_mOFC=final_sample$strength_NOS_l_mOFC/final_sample$GLOB_NOS_strength
+final_sample$rel_strength_NOS_r_mOFC=final_sample$strength_NOS_r_mOFC/final_sample$GLOB_NOS_strength         
+final_sample$rel_strength_NOS_l_put=final_sample$strength_NOS_l_put/final_sample$GLOB_NOS_strength
+final_sample$rel_strength_NOS_r_put=final_sample$strength_NOS_r_put/final_sample$GLOB_NOS_strength          
+final_sample$rel_strength_NOS_l_caudate=final_sample$strength_NOS_l_caudate/final_sample$GLOB_NOS_strength
+final_sample$rel_strength_NOS_r_caudate=final_sample$strength_NOS_r_caudate/final_sample$GLOB_NOS_strength      
+final_sample$rel_strength_NOS_l_acc=final_sample$strength_NOS_l_acc/final_sample$GLOB_NOS_strength
+final_sample$rel_strength_NOS_r_acc=final_sample$strength_NOS_r_acc/final_sample$GLOB_NOS_strength          
+final_sample$rel_strength_FA_l_latOFC=final_sample$strength_FA_l_latOFC/final_sample$GLOB_FA_strength
+final_sample$rel_strength_FA_r_latOFC=final_sample$strength_FA_r_latOFC/final_sample$GLOB_FA_strength       
+final_sample$rel_strength_FA_l_mOFC=final_sample$strength_FA_l_mOFC/final_sample$GLOB_FA_strength
+final_sample$rel_strength_FA_r_mOFC=final_sample$strength_FA_r_mOFC/final_sample$GLOB_FA_strength          
+final_sample$rel_strength_FA_l_put=final_sample$strength_FA_l_put/final_sample$GLOB_FA_strength
+final_sample$rel_strength_FA_r_put=final_sample$strength_FA_r_put/final_sample$GLOB_FA_strength           
+final_sample$rel_strength_FA_l_caudate=final_sample$strength_FA_l_caudate/final_sample$GLOB_FA_strength
+final_sample$rel_strength_FA_r_caudate=final_sample$strength_FA_r_caudate/final_sample$GLOB_FA_strength      
+final_sample$rel_strength_FA_l_acc=final_sample$strength_FA_l_acc/final_sample$GLOB_FA_strength
+final_sample$rel_strength_FA_r_acc=final_sample$strength_FA_r_acc/final_sample$GLOB_FA_strength
+```
+
+# DESCRIPTIVES
+```{r create descriptives of sample, echo=FALSE}
+colnames(final_sample)
+final_sample$hypertension_composite_score[final_sample$hypertension_composite_score==999999] <- NA 
+
+describe(final_sample[,c(41:63)])
+table(final_sample$educ_4levels)
+table(final_sample$FA_color_artifact_y_n)
+
+write.csv(final_sample, "/some/directoryPaper_2019/scripts/final_sample.csv")
+```
+
+```{r Hardy-Weinberg, echo=FALSE}
+table(tmp_sample[,"FTO_risk"])
+MAF=(table(tmp_sample[,"FTO_risk"])[2]+2*table(tmp_sample[,"FTO_risk"])[3])/(nrow(tmp_sample[,])*2)
+HW.test <- HWChisq(table(tmp_sample[,"FTO_risk"]),verbose=TRUE)
+
+table(tmp_sample[,"rs1800497_risk"])
+MAF=(table(tmp_sample[,"rs1800497_risk"])[2]+2*table(tmp_sample[,"rs1800497_risk"])[3])/(nrow(tmp_sample[,])*2)
+HW.test <- HWChisq(table(tmp_sample[,"rs1800497_risk"]),verbose=TRUE)
+
+```
+
+# LINEAR MODELS
+## FA CC ~ BMI (Model 1, Model 2 not done)
+```{r FA CC model, echo=FALSE}
+##FA_CC
+R1 <- lm(rel_FA_CC ~ age_z + factor(sex) + BMI_z , data=final_sample)
+R0 <- lm(rel_FA_CC ~ age_z + factor(sex), data=final_sample)
+anova(R1,R0) #p=0.02419 -> no adjusted model
+summary(R1)
+#lm.beta(R1)
+confint(R1)
+cbind(coefficients(R1),confint(R1))
+
+##graphically show confidence intervalls
+round(confint(R1),4)
+##first check assumptions
+#diagnostics-> normally distributed residuals with homogenous variance
+hist(residuals(R1),probability = T)
+x=seq(from=min(residuals(R1)),
+      to=max(residuals(R1)), length.out=100)
+lines(x=x,y=dnorm(x, mean=0, sd=sd(residuals(R1))))
+
+plot(x=fitted(R1),y=residuals(R1))
+plot(residuals(R1))
+abline(a=0,b=0)
+
+qqnorm(residuals(R1))
+qqline(residuals(R1))
+
+##model stability-> looks ok
+max(abs(dffits(R1)))
+head(dfbeta(R1))
+xx=cbind(coefficients(R1),coefficients(R1)+t(apply(dfbeta(R1),MARGIN=2, FUN=range)))
+colnames(xx)=c("orig","min","max")
+round(xx,5)
+max(as.vector(influence(R1)$hat))
+
+##MULTIcollinearity
+qqPlot(R1)
+vif(R1) # largest vif > 10 is problematic
+1/vif(R1) # Tolerance < 0.1 serious problem; <0.2 potential problem
+mean(vif(R1)) # Average SUBSTANTIALLY > 1, the regression might be biased
+###
+```
+
+## FA CS ~ BMI (Model 1 +2)
+```{r CS FA, echo=FALSE}
+R1 <- lm(rel_FA_strength ~ age_z + factor(sex) + BMI_z , data=final_sample)
+R0 <- lm(rel_FA_strength ~ age_z + factor(sex), data=final_sample)
+anova(R1,R0) # 0.006171
+summary(R1)
+  confint(R1)
+
+hist(residuals(R1),probability = T)
+x=seq(from=min(residuals(R1)),
+      to=max(residuals(R1)), length.out=100)
+lines(x=x,y=dnorm(x, mean=0, sd=sd(residuals(R1))))
+qqPlot(R1)
+
+R2.1=lm(rel_FA_strength ~ age_z + factor(sex) + BMI_z + as.factor(educ_4levels) +
+          log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+          log_meanFD, data=final_sample)
+R2.0=lm(rel_FA_strength ~ age_z + factor(sex) +  as.factor(educ_4levels) +
+          log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+          log_meanFD, 
+        data=final_sample)
+anova(R2.1,R2.0)#0.01985
+summary(R2.1)
+confint(R2.1)
+
+hist(residuals(R2.1),probability = T)
+x=seq(from=min(residuals(R2.1)),
+      to=max(residuals(R2.1)), length.out=100)
+lines(x=x,y=dnorm(x, mean=0, sd=sd(residuals(R2.1))))
+qqPlot(R2.1)
+```
+## NOS CC ~ BMI (Model 1, Model 2 not calculated)
+```{r NOS CC, echo=FALSE}
+R1 <- lm(rel_NOS_CC ~ age_z + factor(sex)+ BMI_z , data=final_sample)
+R0 <- lm(rel_NOS_CC ~ age_z + factor(sex), data=final_sample)
+anova(R1,R0)#p=0.1969
+summary(R1)
+confint(R1)
+```
+## NOS CS ~ BMI (Model 1+2)
+```{r NOS strength, echo=FALSE}
+R1 <- lm(rel_NOS_strength ~ age_z + factor(sex) + BMI_z, data=final_sample)
+R0 <- lm(rel_NOS_strength ~ age_z + factor(sex) , data=final_sample)
+anova(R0,R1)#p=0.002418
+summary(R1)
+confint(R1)
+
+hist(residuals(R1),probability = T)
+x=seq(from=min(residuals(R1)),
+      to=max(residuals(R1)), length.out=100)
+lines(x=x,y=dnorm(x, mean=0, sd=sd(residuals(R1))))
+qqPlot(R1)
+
+R2.1=lm(rel_NOS_strength ~ age_z + factor(sex) + BMI_z + as.factor(educ_4levels) +
+          log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+          log_meanFD, data=final_sample)
+R2.0=lm(rel_NOS_strength ~ age_z + factor(sex) + as.factor(educ_4levels) +
+          log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+          log_meanFD, 
+        data=final_sample)
+anova(R2.1,R2.0)#0.007409
+summary(R2.1)
+confint(R2.1)
+
+hist(residuals(R2.1),probability = T)
+x=seq(from=min(residuals(R2.1)),
+      to=max(residuals(R2.1)), length.out=100)
+lines(x=x,y=dnorm(x, mean=0, sd=sd(residuals(R2.1))))
+qqPlot(R2.1)
+
+check_model(R2.1)
+```
+## Strength of individual nodes
+```{r strength of individual node, echo=FALSE}
+R1 <- lm(rel_strength_FA_l_acc ~ age_z + factor(sex) + BMI_z + 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+R0 <- lm(rel_strength_FA_l_acc ~ age_z + factor(sex) + 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+anova(R1,R0)#p=0.0026/0.026
+summary(R1)
+confint(R1)
+R1 <- lm(rel_strength_FA_r_acc ~ age_z + factor(sex) + BMI_z + 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+R0 <- lm(rel_strength_FA_r_acc ~ age_z + factor(sex) + 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+anova(R1,R0)#p=0.00159/0.0043
+summary(R1)
+confint(R1)
+
+R1 <- lm(rel_strength_FA_l_caudate ~ age_z + factor(sex)+ BMI_z + 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+R0 <- lm(rel_strength_FA_l_caudate ~ age_z + factor(sex) + 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+anova(R1,R0)#p=0.49/0.72
+summary(R1)
+confint(R1)
+
+R1 <- lm(rel_strength_FA_r_caudate ~ age_z + factor(sex)+ BMI_z + 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+R0 <- lm(rel_strength_FA_r_caudate ~ age_z + factor(sex) + 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+anova(R1,R0)#p=0.15/0.12
+summary(R1)
+confint(R1)
+
+R1 <- lm(rel_strength_FA_l_put ~ age_z + factor(sex)+ BMI_z + 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+R0 <- lm(rel_strength_FA_l_put ~ age_z + factor(sex)+ 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+anova(R1,R0)#p=0.0009/0.0019
+summary(R1)
+confint(R1)
+
+R1 <- lm(rel_strength_FA_r_put ~ age_z + factor(sex)+ BMI_z + 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+R0 <- lm(rel_strength_FA_r_put ~ age_z + factor(sex)+ 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+anova(R1,R0)#p=0.007/0.017
+summary(R1)
+confint(R1)
+
+R1 <- lm(rel_strength_FA_l_mOFC ~ age_z + factor(sex)+ BMI_z + 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+R0 <- lm(rel_strength_FA_l_mOFC ~ age_z + factor(sex)+
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+anova(R1,R0)#p=0.081/0.082
+summary(R1)
+confint(R1)
+
+R1 <- lm(rel_strength_FA_r_mOFC ~ age_z + factor(sex)+ BMI_z + 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+R0 <- lm(rel_strength_FA_r_mOFC ~ age_z + factor(sex)+ 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+anova(R1,R0)#p=0.27/0.44
+summary(R1)
+confint(R1)
+
+R1 <- lm(rel_strength_FA_l_latOFC ~ age_z + factor(sex)+ BMI_z + 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD , data=final_sample)
+R0 <- lm(rel_strength_FA_l_latOFC ~ age_z + factor(sex)+
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+anova(R1,R0)#p=0.62/0.63
+summary(R1)
+confint(R1)
+
+R1 <- lm(rel_strength_FA_r_latOFC ~ age_z + factor(sex)+ BMI_z + 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+R0 <- lm(rel_strength_FA_r_latOFC ~ age_z + factor(sex)+ 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+anova(R1,R0)#p=0.0018/0.0055
+summary(R1)
+confint(R1)
+
+###NOS
+R1 <- lm(rel_strength_NOS_l_acc ~ age_z + factor(sex)+ BMI_z + 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+R0 <- lm(rel_strength_NOS_l_acc ~ age_z + factor(sex)+ 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+anova(R1,R0)#adj p 0.05
+summary(R1)
+confint(R1)
+
+R1 <- lm(rel_strength_NOS_r_acc ~ age_z + factor(sex)+ BMI_z + 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+R0 <- lm(rel_strength_NOS_r_acc ~ age_z + factor(sex)+
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+anova(R1,R0)#adj p 0.034
+summary(R1)
+confint(R1)
+R1 <- lm(rel_strength_NOS_l_caudate ~ age_z + factor(sex)+ BMI_z + 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+R0 <- lm(rel_strength_NOS_l_caudate ~ age_z + factor(sex)+
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+anova(R1,R0)#adj p 0.16
+summary(R1)
+confint(R1)
+qqplot(R1)
+hist(final_sample$rel_strength_FA_l_caudate)
+
+R1 <- lm(rel_strength_NOS_r_caudate ~ age_z + factor(sex)+ BMI_z + 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+R0 <- lm(rel_strength_NOS_r_caudate ~ age_z + factor(sex)+  
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+anova(R1,R0)#adj p=0.89
+summary(R1)
+confint(R1)
+R1 <- lm(rel_strength_NOS_l_put ~ age_z + factor(sex)+ BMI_z + 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+R0 <- lm(rel_strength_NOS_l_put ~ age_z + factor(sex)+
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+anova(R1,R0)#adj p=0.0015
+summary(R1)
+confint(R1)
+
+R1 <- lm(rel_strength_NOS_r_put ~ age_z + factor(sex)+ BMI_z + 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+R0 <- lm(rel_strength_NOS_r_put ~ age_z + factor(sex)+ 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+anova(R1,R0)#adj p=0.062
+summary(R1)
+confint(R1)
+R1 <- lm(rel_strength_NOS_l_mOFC ~ age_z + factor(sex)+ BMI_z +
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+R0 <- lm(rel_strength_NOS_l_mOFC ~ age_z + factor(sex)+ 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+anova(R1,R0)#adj p=0.024
+summary(R1)
+confint(R1)
+R1 <- lm(rel_strength_NOS_r_mOFC ~ age_z + factor(sex)+ BMI_z +
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+R0 <- lm(rel_strength_NOS_r_mOFC ~ age_z + factor(sex)+ 
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+anova(R1,R0)#p=0.32
+summary(R1)
+confint(R1)
+
+R1 <- lm(rel_strength_NOS_l_latOFC ~ age_z + factor(sex)+ BMI_z +
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD , data=final_sample)
+R0 <- lm(rel_strength_NOS_l_latOFC ~ age_z + factor(sex)+
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+anova(R1,R0)#p=0.079
+summary(R1)
+confint(R1)
+
+R1 <- lm(rel_strength_NOS_r_latOFC ~ age_z + factor(sex)+ BMI_z +
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+R0 <- lm(rel_strength_NOS_r_latOFC ~ age_z + factor(sex) +
+           as.factor(educ_4levels) +
+           log_CESD + as.factor(TOB2_SMOKING_STATUS_CURATED) + 
+           log_meanFD, data=final_sample)
+anova(R1,R0)#p=0.16
+summary(R1)
+confint(R1)
+```
+
+## GENETICS
+### Genetic effects on BMI
+```{r Genetic effects on BMI, echo=FALSE}
+#trend level significance of interaction
+R3 <- lm(BMI_BMI~ Age_all + factor(sex) + as.factor(FTO_risk)*as.factor(Taq1A_risk)  , data=final_sample)
+R0 <- lm(BMI_BMI~ Age_all + factor(sex)+ as.factor(FTO_risk) + as.factor(Taq1A_risk), data=final_sample)
+summary(R3)
+anova(R3,R0)
+
+#interpretation of main effects from this model:
+R1 <- lm(BMI_BMI~ Age_all + factor(sex)+ as.factor(FTO_risk) + as.factor(Taq1A_risk), data=final_sample)
+summary(R1)
+
+#significance of FTO
+R1 <- lm(BMI_BMI~ Age_all + factor(sex)+ as.factor(FTO_risk) + as.factor(Taq1A_risk), data=final_sample)
+R0 <- lm(BMI_BMI~ Age_all + factor(sex) + as.factor(Taq1A_risk)  , data=final_sample)
+anova(R1,R0)
+
+#significance of Taq
+R1 <- lm(BMI_BMI~ Age_all + factor(sex)+ as.factor(FTO_risk) + as.factor(Taq1A_risk), data=final_sample)
+R0 <- lm(BMI_BMI~ Age_all + factor(sex) + as.factor(FTO_risk)  , data=final_sample)
+anova(R1,R0)
+
+```
+```{r plot BMI and genotypes, echo=FALSE}
+plot <- ggplot(final_sample, aes(x = as.factor(FTO_risk), y = BMI_BMI, colour = as.factor(Taq1A_risk)))+
+        geom_boxplot(outlier.shape = NA) + 
+        geom_jitter(position=position_jitterdodge(jitter.width=0.2, dodge.width=0.8), aes(colour = as.factor(Taq1A_risk))) +
+        theme_classic()+
+        ylab(bquote("BMI" ~ (kg/m^2))) + 
+        xlab(bquote('# of FTO risk alleles')) +
+        scale_color_discrete(name = "Taq1A risk allele", labels = c("no", "yes")) +
+        theme(
+        legend.position="top",
+        axis.text = element_text(colour = "black"),
+        axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 14),
+        axis.title.x = element_text( size=16),
+        axis.title.y = element_text( size=16),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16))#,
+        #plot.margin=unit(c(1.5,0,0.4,1),"cm"))
+plot  
+  
+ggsave("/some/directoryPaper_2019/manuscript/figures/Figure2_updated.jpeg", width = 185, height = 200, units = "mm", dpi = 300)  
+ggsave("/some/directoryPaper_2019/manuscript/figures/Figure2_updated.eps", width = 185, height = 200, units = "mm", dpi = 300) 
+ggsave("/some/directoryPaper_2019/manuscript/figures/Figure2_updated.tiff", width = 185, height = 200, units = "mm", dpi = 300)  
+```
+
+### FA CC
+#### without BMI adjustment
+```{r FA CC, echo =FALSE}
+R1 <- lm(rel_FA_CC ~ age_z + factor(sex) + as.factor(Taq1A_risk)*as.factor(FTO_risk) , data=final_sample)
+  R0 <- lm(rel_FA_CC ~ age_z + factor(sex) + as.factor(Taq1A_risk) + as.factor(FTO_risk) , data=final_sample)
+anova(R0,R1)
+summary(R1)
+
+hist(residuals(R1),probability = T)
+x=seq(from=min(residuals(R1)),
+      to=max(residuals(R1)), length.out=100)
+lines(x=x,y=dnorm(x, mean=0, sd=sd(residuals(R1))))
+qqPlot(R1)
+
+summary(R0)
+
+R1 <- lm(rel_FA_CC ~ age_z + factor(sex) + BMI_z + as.factor(Taq1A_risk)*as.factor(FTO_risk) , data=final_sample)
+R0 <- lm(rel_FA_CC ~ age_z + factor(sex) + BMI_z + as.factor(Taq1A_risk) + as.factor(FTO_risk), data=final_sample)
+anova(R0,R1)
+
+summary(R0)
+```
+#### with BMI adjustment (used in paper, see above)
+```{r FA CC, echo =FALSE}
+R1 <- lm(rel_FA_CC ~ age_z + factor(sex) + BMI_z + as.factor(Taq1A_risk)*as.factor(FTO_risk) , data=final_sample)
+R0 <- lm(rel_FA_CC ~ age_z + factor(sex), data=final_sample)
+anova(R0,R1)
+
+hist(residuals(R1),probability = T)
+x=seq(from=min(residuals(R1)),
+      to=max(residuals(R1)), length.out=100)
+lines(x=x,y=dnorm(x, mean=0, sd=sd(residuals(R1))))
+qqPlot(R1)
+
+R2 <- lm(rel_FA_CC ~ age_z + factor(sex) + BMI_z + as.factor(Taq1A_risk)+as.factor(FTO_risk) , data=final_sample)
+anova(R2,R0)
+summary(R2)
+confint(R2)
+```
+#### with all confounders  (not used in paper)
+```{r FA CC, echo =FALSE}
+R1 <- lm(rel_FA_CC ~ age_z + factor(sex) + BMI_z + educ_4levels +
+           log_CESD + TOB2_SMOKING_STATUS_CURATED + 
+           log_meanFD + as.factor(Taq1A_risk)*as.factor(FTO_risk) , data=final_sample)
+R0 <- lm(rel_FA_CC ~ age_z + factor(sex) + BMI_z + educ_4levels +
+           log_CESD + TOB2_SMOKING_STATUS_CURATED + 
+           log_meanFD, data=final_sample)
+anova(R0,R1)
+
+hist(residuals(R1),probability = T)
+x=seq(from=min(residuals(R1)),
+      to=max(residuals(R1)), length.out=100)
+lines(x=x,y=dnorm(x, mean=0, sd=sd(residuals(R1))))
+qqPlot(R1)
+
+R2 <- lm(rel_FA_CC ~ age_z + factor(sex) + BMI_z + educ_4levels +
+           log_CESD + TOB2_SMOKING_STATUS_CURATED + 
+           log_meanFD + as.factor(Taq1A_risk)+as.factor(FTO_risk) , data=final_sample)
+anova(R2,R0)
+```
+### FA strength
+#### without BMI adjustment
+```{r FA strength without BMI, echo=FALSE}
+R1 <- lm(rel_FA_strength ~ age_z + factor(sex)  + Taq1A_risk*FTO_risk , data=final_sample)
+R0 <- lm(rel_FA_strength ~ age_z + factor(sex) + Taq1A_risk +FTO_risk , data=final_sample)
+anova(R1,R0)
+summary(R1)
+
+R2 <- lm(rel_FA_strength ~ age_z + factor(sex) + Taq1A_risk+FTO_risk, data=final_sample)
+summary(R2)
+confint(R2)
+
+R1 <- lm(rel_FA_strength ~ age_z + factor(sex) + BMI_z + Taq1A_risk*FTO_risk , data=final_sample)
+R0 <- lm(rel_FA_strength ~ age_z + factor(sex)+ BMI_z + Taq1A_risk +FTO_risk, data=final_sample)
+anova(R1,R0)
+summary(R0)
+```
+#### with BMI adjustment (not used for paper)
+```{r FA strength with BMI, echo=FALSE}
+R1 <- lm(rel_FA_strength ~ age_z + factor(sex) + BMI_z + Taq1A_risk*FTO_risk , data=final_sample)
+R0 <- lm(rel_FA_strength ~ age_z + factor(sex)+ BMI_z, data=final_sample)
+anova(R1,R0)
+summary(R1)
+
+R2 <- lm(rel_FA_strength ~ age_z + factor(sex) + BMI_z + Taq1A_risk+FTO_risk, data=final_sample)
+anova(R2,R0)
+summary(R2)
+```
+#### with all confounders (not used for paper)
+```{r FA CS, echo =FALSE}
+R1 <- lm(rel_FA_strength ~ age_z + factor(sex) + BMI_z + educ_4levels +
+           log_CESD + TOB2_SMOKING_STATUS_CURATED + 
+           log_meanFD + as.factor(Taq1A_risk)*as.factor(FTO_risk) , data=final_sample)
+R0 <- lm(rel_FA_strength ~ age_z + factor(sex) + BMI_z + educ_4levels +
+           log_CESD + TOB2_SMOKING_STATUS_CURATED + 
+           log_meanFD, data=final_sample)
+summary(R1)
+anova(R0,R1)
+
+R2 <- lm(rel_FA_strength ~ age_z + factor(sex) + BMI_z + educ_4levels +
+           log_CESD + TOB2_SMOKING_STATUS_CURATED + 
+           log_meanFD + as.factor(Taq1A_risk) + as.factor(FTO_risk) , data=final_sample)
+summary(R2)
+anova(R0,R2)
+
+```
+
+### NOS CC 
+#### without BMI adjustment
+```{r NOS CC, echo=FALSE}
+R1 <- lm(rel_NOS_CC ~ age_z + factor(sex) +  Taq1A_risk*FTO_risk , data=final_sample)
+R0 <- lm(rel_NOS_CC ~ age_z + factor(sex) + Taq1A_risk+FTO_risk, data=final_sample)
+anova(R1,R0)
+summary(R0)
+confint(R0)
+
+R1 <- lm(rel_NOS_CC ~ age_z + factor(sex) +  BMI_z + Taq1A_risk*FTO_risk , data=final_sample)
+R0 <- lm(rel_NOS_CC ~ age_z + factor(sex) + BMI_z + Taq1A_risk +FTO_risk , data=final_sample)
+anova(R1,R0)
+summary(R0)
+```
+#### with BMI adjustment (see above)
+```{r NOS CC, echo=FALSE}
+R1 <- lm(rel_NOS_CC ~ age_z + factor(sex) +  BMI_z + Taq1A_risk*FTO_risk , data=final_sample)
+R0 <- lm(rel_NOS_CC ~ age_z + factor(sex) + BMI_z, data=final_sample)
+anova(R1,R0)
+
+R2 <- lm(rel_NOS_CC ~ age_z + factor(sex) +  BMI_z + Taq1A_risk+FTO_risk, data=final_sample)
+anova(R2,R0)
+
+```
+#### with all adjustments (not used for paper)
+```{r NOS CC, echo =FALSE}
+R1 <- lm(rel_NOS_CC ~ age_z + factor(sex) + BMI_z + educ_4levels +
+           log_CESD + TOB2_SMOKING_STATUS_CURATED + 
+           log_meanFD + as.factor(Taq1A_risk)*as.factor(FTO_risk) , data=final_sample)
+R0 <- lm(rel_NOS_CC ~ age_z + factor(sex) + BMI_z + educ_4levels +
+           log_CESD + TOB2_SMOKING_STATUS_CURATED + 
+           log_meanFD, data=final_sample)
+summary(R1)
+anova(R0,R1)
+
+R2 <- lm(rel_NOS_CC ~ age_z + factor(sex) + BMI_z + educ_4levels +
+           log_CESD + TOB2_SMOKING_STATUS_CURATED + 
+           log_meanFD + as.factor(Taq1A_risk) + as.factor(FTO_risk) , data=final_sample)
+anova(R0,R2)
+summary(R2)
+```
+
+#NOS strength 
+### without BMI adjustment
+```{r NOS CS, echo=FALSE}
+R1 <- lm(rel_NOS_strength ~ age_z + factor(sex) + Taq1A_risk*FTO_risk , data=final_sample)
+R0 <- lm(rel_NOS_strength ~ age_z + factor(sex)+ Taq1A_risk+FTO_risk, data=final_sample)
+anova(R1,R0)
+summary(R1)
+summary(R0)
+confint(R0)
+
+R1 <- lm(rel_NOS_strength ~ age_z + factor(sex) + Taq1A_risk*FTO_risk + BMI_z , data=final_sample)
+R0 <- lm(rel_NOS_strength ~ age_z + factor(sex) + BMI_z + Taq1A_risk+FTO_risk, data=final_sample)
+anova(R1,R0)
+summary(R0)
+```
+### with BMI adjustment
+```{r NOS CS, echo=FALSE}
+R1 <- lm(rel_NOS_strength ~ age_z + factor(sex) + Taq1A_risk*FTO_risk + BMI_z , data=final_sample)
+R0 <- lm(rel_NOS_strength ~ age_z + factor(sex) + BMI_z, data=final_sample)
+anova(R1,R0)
+
+R2 <- lm(rel_NOS_strength ~ age_z + factor(sex)+ BMI_z + Taq1A_risk+FTO_risk, data=final_sample)
+anova(R2,R0)
+summary(R2)
+
+R3<- lm(rel_NOS_strength ~ age_z + factor(sex) +FTO_risk*BMI_z + Taq1A_risk, data=final_sample)
+summary(R3)
+anova(R3,R2)
+```
+### with all adjustments
+
+```{r NOS CS, echo =FALSE}
+R1 <- lm(rel_NOS_strength ~ age_z + factor(sex) + BMI_z + educ_4levels +
+           log_CESD + TOB2_SMOKING_STATUS_CURATED + 
+           log_meanFD + as.factor(Taq1A_risk)*as.factor(FTO_risk) , data=final_sample)
+R0 <- lm(rel_NOS_strength ~ age_z + factor(sex) + BMI_z + educ_4levels +
+           log_CESD + TOB2_SMOKING_STATUS_CURATED + 
+           log_meanFD, data=final_sample)
+summary(R1)
+anova(R0,R1)
+
+R2 <- lm(rel_NOS_strength ~ age_z + factor(sex) + BMI_z + educ_4levels +
+           log_CESD + TOB2_SMOKING_STATUS_CURATED + 
+           log_meanFD + as.factor(Taq1A_risk) + as.factor(FTO_risk) , data=final_sample)
+anova(R0,R2)
+summary(R2)
+```
