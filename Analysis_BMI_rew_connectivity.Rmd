@@ -1,0 +1,210 @@
+---
+title: "BMI, obesity-related genetic polymorphisms and reward network structural connectivity"
+author: "Frauke Beyer. Markus Scholz, Rui Zhang, Kerstin Wirkner, Markus Loeffler, Michael Stumvoll, Arno Villringer, A. Veronica Witte "
+date: "`r format(Sys.time(), '%B %e, %Y')`"
+output:
+  bookdown::html_document2:
+    fig_caption: yes
+    number_sections: yes
+    toc: yes
+---
+```{r loading necessary libraries for R 3.6.1, include = FALSE}
+library(ggplot2)
+library(psych); 
+library(pastecs)
+library(boot); 
+library(QuantPsyc)
+library(lme4)
+library(nlme)
+library(effects)
+library(nortest)
+library(mediation)
+library(car)
+library(dplyr)
+library(haven)
+library(HardyWeinberg)
+library(performance)
+library(car)
+library("gplots")
+library(knitr)
+library(kableExtra)
+```
+
+Here, you find the main analysis steps for the publication "	Higher BMI, but not obesity-related genetic polymorphisms, correlates with lower structural connectivity of the reward network in a population-based study" with a synthetic dataset based on the real data.
+```{r load input data, echo=FALSE}
+final_sample <- read.csv("synth_data.csv")
+```
+
+# Descriptives of the dataset
+```{r create descriptives of sample, echo=FALSE}
+tmp=describe(final_sample[,c("Age_all","BMI_BMI","rel_FA_CC","rel_FA_strength",
+                         "rel_NOS_CC", "rel_NOS_strength")])
+
+tmp %>%
+   kable("html", escape = F, caption="Demographics of synthetic dataset") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+table(final_sample[,"sex"])
+
+cont_table=table(final_sample$FTO_risk,final_sample$Taq1A_risk)
+dt <- as.table(cont_table)
+balloonplot(t(dt), main="", xlab = "Taq1A risk allele carrier" , ylab="FTO_risk", show.margins = FALSE)
+```
+Check for Hardy-Weinberg equilibrium of FTO risk allele.
+```{r check Hardy-Weinberg equilibrium, echo=FALSE}
+#FTO
+MAF=(table(final_sample[,"FTO_risk"])[2]+2*table(final_sample[,"FTO_risk"])[3])/(nrow(final_sample[,])*2)
+HW.test <- HWChisq(table(final_sample[,"FTO_risk"]),verbose=TRUE)
+
+#For Taq1A, we only provide the binarized variable in the synthetic dataset.
+```
+
+# Association of BMI and reward network connectivity
+Here, we test for the linear association of BMI and reward network connectivity measures. If BMI is significant based on `anova` model comparison, we would perform the second analysis adjusting for covariates (not included in the synthetic dataset).
+
+## FA CC ~ BMI 
+```{r FA CC model, echo=FALSE}
+##FA_CC
+R1 <- lm(rel_FA_CC ~ Age_all + factor(sex) + BMI_BMI , data=final_sample)
+R0 <- lm(rel_FA_CC ~ Age_all + factor(sex), data=final_sample)
+anova(R1,R0) #p=0.02419 -> no adjusted model
+summary(R1)
+#lm.beta(R1)
+confint(R1)
+cbind(coefficients(R1),confint(R1))
+
+##graphically show confidence intervalls
+round(confint(R1),4)
+##first check assumptions
+#diagnostics-> normally distributed residuals with homogenous variance
+hist(residuals(R1),probability = T)
+x=seq(from=min(residuals(R1)),
+      to=max(residuals(R1)), length.out=100)
+lines(x=x,y=dnorm(x, mean=0, sd=sd(residuals(R1))))
+
+plot(x=fitted(R1),y=residuals(R1))
+plot(residuals(R1))
+abline(a=0,b=0)
+
+qqnorm(residuals(R1))
+qqline(residuals(R1))
+
+##model stability-> looks ok
+max(abs(dffits(R1)))
+head(dfbeta(R1))
+xx=cbind(coefficients(R1),coefficients(R1)+t(apply(dfbeta(R1),MARGIN=2, FUN=range)))
+colnames(xx)=c("orig","min","max")
+round(xx,5)
+max(as.vector(influence(R1)$hat))
+
+##MULTIcollinearity
+vif(R1) # largest vif > 10 is problematic
+1/vif(R1) # Tolerance < 0.1 serious problem; <0.2 potential problem
+mean(vif(R1)) # Average SUBSTANTIALLY > 1, the regression might be biased
+###
+```
+
+## FA CS ~ BMI (Model 1)
+```{r CS FA, echo=FALSE}
+R1 <- lm(rel_FA_strength ~ Age_all + factor(sex) + BMI_BMI , data=final_sample)
+R0 <- lm(rel_FA_strength ~ Age_all + factor(sex), data=final_sample)
+anova(R1,R0)
+summary(R1)
+confint(R1)
+
+hist(residuals(R1),probability = T)
+x=seq(from=min(residuals(R1)),
+      to=max(residuals(R1)), length.out=100)
+lines(x=x,y=dnorm(x, mean=0, sd=sd(residuals(R1))))
+qqPlot(R1)
+
+```
+## NOS CC ~ BMI (Model 1)
+```{r NOS CC, echo=FALSE}
+R1 <- lm(rel_NOS_CC ~ Age_all + factor(sex)+ BMI_BMI , data=final_sample)
+R0 <- lm(rel_NOS_CC ~ Age_all + factor(sex), data=final_sample)
+anova(R1,R0)
+summary(R1)
+confint(R1)
+```
+## NOS CS ~ BMI (Model 1)
+```{r NOS strength, echo=FALSE}
+R1 <- lm(rel_NOS_strength ~ Age_all + factor(sex) + BMI_BMI, data=final_sample)
+R0 <- lm(rel_NOS_strength ~ Age_all + factor(sex) , data=final_sample)
+anova(R0,R1)
+summary(R1)
+confint(R1)
+
+hist(residuals(R1),probability = T)
+x=seq(from=min(residuals(R1)),
+      to=max(residuals(R1)), length.out=100)
+lines(x=x,y=dnorm(x, mean=0, sd=sd(residuals(R1))))
+qqPlot(R1)
+```
+
+# Association of genotypes and BMI
+First, we tested for an interaction of FTO and Taq1A on BMI.
+```{r Interaction of FTO and Taq1A, echo=FALSE}
+R1 <- lm(BMI_BMI~ Age_all + factor(sex) + as.factor(FTO_risk)*as.factor(Taq1A_risk)  , data=final_sample)
+R0 <- lm(BMI_BMI~ Age_all + factor(sex)+ as.factor(FTO_risk) + as.factor(Taq1A_risk), data=final_sample)
+summary(R1)
+anova(R1,R0)
+```
+Then we estimated the main effect of both genotypes.
+```{r main effect of genotypes, echo=FALSE}
+summary(R0)
+```
+Like in the original data, more FTO alleles predicted higher BMI. In the synthetic data, the association of carrying a Taq1A risk allele and lower BMI becomes significant. The same trend was visible in the real data.
+
+# Association of genotypes and reward network connectivity
+Finally, we checked for a link between obesity-related genotypes and reward network connectivity. We saw no significant interaction, like in the real data, between FTO and Taq1A genotypes. In the synthetic data, there is a trend towards higher FA CC and FA strength for Taq1A risk carriers, which we did not find in the real data. There was no significant effect of FTO genotype.
+
+## genotype ~ FA CC
+```{r genotype and reward network connectivity FA CC, echo=FALSE}
+R1 <- lm(rel_FA_CC ~ Age_all + factor(sex) + as.factor(Taq1A_risk)*as.factor(FTO_risk) , data=final_sample)
+  R0 <- lm(rel_FA_CC ~ Age_all + factor(sex) + as.factor(Taq1A_risk) + as.factor(FTO_risk) , data=final_sample)
+anova(R0,R1)
+summary(R1)
+
+summary(R0)
+```
+## genotype ~ FA CS
+```{r genotype and reward network connectivity FA CS, echo=FALSE}
+R1 <- lm(rel_FA_strength ~ Age_all + factor(sex) + as.factor(Taq1A_risk)*as.factor(FTO_risk) , data=final_sample)
+  R0 <- lm(rel_FA_strength ~ Age_all + factor(sex) + as.factor(Taq1A_risk) + as.factor(FTO_risk) , data=final_sample)
+anova(R0,R1)
+summary(R1)
+
+summary(R0)
+```
+## genotype ~ NOS CC
+```{r genotype and reward network connectivity NOS CC, echo=FALSE}
+R1 <- lm(rel_NOS_CC ~ Age_all + factor(sex) + as.factor(Taq1A_risk)*as.factor(FTO_risk) , data=final_sample)
+  R0 <- lm(rel_NOS_CC ~ Age_all + factor(sex) + as.factor(Taq1A_risk) + as.factor(FTO_risk) , data=final_sample)
+anova(R0,R1)
+summary(R1)
+
+summary(R0)
+```
+## genotype ~ NOS CS
+```{r genotype and reward network connectivity NOS CS, echo=FALSE}
+R1 <- lm(rel_NOS_strength ~ Age_all + factor(sex) + as.factor(Taq1A_risk)*as.factor(FTO_risk) , data=final_sample)
+  R0 <- lm(rel_NOS_strength ~ Age_all + factor(sex) + as.factor(Taq1A_risk) + as.factor(FTO_risk) , data=final_sample)
+anova(R0,R1)
+summary(R1)
+
+summary(R0)
+```
+
+## Exploratory analysis in normal-weight participants
+As reported in the discussion, we found a trend toward higher BMI in normal-weight FTO carriers. We see a similar pattern in the synthetic data, though it is not significant in the model comparison.
+```{r exploratory analysis in normal-weight participants, echo=FALSE}
+final_sample_nw=final_sample[final_sample$BMI_BMI<=25&final_sample$BMI_BMI>=18,]
+table(final_sample$BMI_BMI<=25&final_sample$BMI_BMI>=18)
+
+
+R1 <- lm(rel_NOS_strength ~ Age_all + factor(sex) + as.factor(FTO_risk) , data=final_sample_nw)
+R0<- lm(rel_NOS_strength ~ Age_all + factor(sex),data=final_sample_nw)
+anova(R1,R0)
+summary(R1)
+```
